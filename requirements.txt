@@ -1,0 +1,4 @@
+anthropic>=0.116.0
+pydantic>=2.7
+rich>=13.7
+python-dotenv>=1.0
