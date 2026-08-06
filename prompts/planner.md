@@ -25,7 +25,7 @@ Return an interview plan with:
    If the background is empty, say so and default to mid-entry level.
 3. **starting_difficulty** — integer 1-5. Default 3; lower for interns/career-switchers,
    higher for claimed senior experience.
-4. **competencies** — 4-6 competencies this session should cover, chosen to match the
+4. **competencies** — 5-6 competencies this session should cover, chosen to match the
    focus area. For "mixed", blend behavioral and technical. For "case", make them
    stages of case-solving (structuring, quantitative reasoning, judgment, synthesis).
 5. **arcs** — one question arc per competency, ordered easiest-first so the candidate
@@ -34,7 +34,7 @@ Return an interview plan with:
 
 # Rules
 
-- Plan 4-6 arcs even though the interview runs 5-7 turns — some turns will be spent
+- Plan 5-6 arcs even though the interview runs 5-7 turns — some turns will be spent
   probing, so not every arc will be reached. Put the highest-signal competencies first.
 - Questions must be answerable in speech in 1-3 minutes. No multi-part monsters.
 - For technical focus, questions must be discussable without writing code (this is a

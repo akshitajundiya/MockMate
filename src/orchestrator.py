@@ -61,6 +61,11 @@ class InterviewSession:
     def run(self, candidate: CandidateFn) -> None:
         self._phase("Planning the interview…")
         self.plan = plan_interview(self.profile)
+        if not self.plan.arcs:
+            raise RuntimeError(
+                "The planner returned an interview plan with no question arcs. "
+                "Please re-run — this is usually transient."
+            )
         self.state.difficulty = _clamp(self.plan.starting_difficulty)
 
         interviewer = Interviewer(self.profile, self.plan)
@@ -102,9 +107,21 @@ class InterviewSession:
                 answer, self._directive(), self.cb.on_interviewer_text
             )
 
+        if not self.state.turns:
+            self.report = (
+                "## No feedback yet\n\n"
+                "The session ended before you answered anything, so there's no evidence "
+                "to coach on. Run it again whenever you're ready."
+            )
+            return
+
         self._phase("Preparing your coaching report…")
         self.report = coach_report(
-            self.profile, self.plan, self.state.turns, self.cb.on_coach_text
+            self.profile,
+            self.plan,
+            self.state.turns,
+            self.cb.on_coach_text,
+            ended_early=self.state.ended_early,
         )
 
     # ------------------------------------------------------------------
@@ -173,6 +190,17 @@ class InterviewSession:
                 f"Stay on the current topic and probe deeper. Target: {hint}. "
                 "Ask exactly one focused follow-up question."
             )
+        # Every planned arc is used up but turns remain. `_current_arc` clamps to the
+        # last arc, so falling through here would re-ask a topic already closed out.
+        if self.state.current_arc_index >= len(self.plan.arcs):
+            return base + (
+                "Every planned competency has now been covered. Acknowledge their previous "
+                "answer briefly, then ask one final question that builds on something "
+                "specific the candidate said earlier in this interview — push for depth, "
+                "tradeoffs, or what they would do differently. Do not repeat a topic you "
+                f"have already closed out. Calibrate to difficulty {self.state.difficulty}/5."
+            )
+
         # Fresh arc
         return base + (
             "Acknowledge their previous answer in a short, natural sentence (no scores, no verdicts), "

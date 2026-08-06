@@ -4,17 +4,26 @@ Each agent = a system prompt (prompts/*.md) + a call shape (text vs structured)
 + its own context. They deliberately do NOT share a conversation:
 
   Planner     one-shot, structured   -> InterviewPlan
-  Interviewer multi-turn, streamed   -> next utterance (never sees scores)
+  Interviewer multi-turn, chained    -> next utterance (never sees scores)
   Evaluator   one-shot per answer,   -> Evaluation (never sees the chat persona,
               structured                only the Q/A pair + rubric context)
   Coach       one-shot, streamed     -> markdown report (sees everything, at the end)
+
+The multi-turn agents chain with `previous_interaction_id`, so their history is
+held server-side by the API rather than replayed by us each turn.
 """
 
-import json
 from typing import Callable, Optional
 
 from . import prompts
-from .llm import complete_structured, complete_text
+from .config import (
+    THINKING_DEEP,
+    THINKING_FAST,
+    TOKENS_CONVERSATION,
+    TOKENS_REPORT,
+    TOKENS_STRUCTURED,
+)
+from .llm import complete_structured, stream_turn
 from .schemas import (
     CandidateProfile,
     Evaluation,
@@ -34,7 +43,7 @@ def plan_interview(profile: CandidateProfile) -> InterviewPlan:
         f"Session focus: {profile.focus}\n"
         f"Candidate background: {profile.background or '(none provided)'}"
     )
-    return complete_structured(system, user, InterviewPlan)
+    return complete_structured(system, user, InterviewPlan, max_tokens=TOKENS_STRUCTURED)
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +66,7 @@ class Interviewer:
             role_summary=plan.role_summary,
             calibration_note=plan.calibration_note,
         )
-        self.messages: list[dict] = []
+        self.previous_id: Optional[str] = None
 
     def open(self, directive: str, on_text: Optional[Callable[[str], None]] = None) -> str:
         return self._turn(
@@ -79,10 +88,19 @@ class Interviewer:
         )
 
     def _turn(self, user_content: str, on_text) -> str:
-        self.messages.append({"role": "user", "content": user_content})
-        reply = complete_text(self.system, self.messages, max_tokens=600, on_text=on_text)
-        self.messages.append({"role": "assistant", "content": reply})
-        return reply
+        text, interaction_id = stream_turn(
+            self.system,
+            user_content,
+            max_tokens=TOKENS_CONVERSATION,
+            thinking=THINKING_FAST,
+            previous_id=self.previous_id,
+            on_text=on_text,
+        )
+        # Keep the last good id if the stream ended without a completion event,
+        # rather than silently resetting the conversation to turn one.
+        if interaction_id:
+            self.previous_id = interaction_id
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +122,7 @@ def evaluate_answer(
         f"QUESTION ASKED:\n{turn.question}\n\n"
         f"CANDIDATE ANSWER:\n{turn.answer}"
     )
-    return complete_structured(system, user, Evaluation)
+    return complete_structured(system, user, Evaluation, max_tokens=TOKENS_STRUCTURED)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +134,7 @@ def coach_report(
     plan: InterviewPlan,
     turns: list[TurnRecord],
     on_text: Optional[Callable[[str], None]] = None,
+    ended_early: bool = False,
 ) -> str:
     system = prompts.load("coach")
     transcript_blocks = []
@@ -129,21 +148,32 @@ def coach_report(
             f"Candidate: {t.answer}\n"
             f"Evaluator output:\n```json\n{ev_json}\n```"
         )
+    if ended_early:
+        status = (
+            f"ENDED EARLY — the candidate stopped after {len(turns)} answer(s). "
+            "Competencies that were never asked about are untested, not weak."
+        )
+    else:
+        status = f"COMPLETED — {len(turns)} answers over the full session."
     user = (
         f"Target role: {profile.role}\n"
         f"Session focus: {profile.focus}\n"
         f"Candidate background: {profile.background or '(none provided)'}\n"
-        f"Competencies planned: {', '.join(plan.competencies)}\n\n"
+        f"Competencies planned: {', '.join(plan.competencies)}\n"
+        f"Session status: {status}\n\n"
         "FULL INTERVIEW TRANSCRIPT WITH PER-TURN EVALUATIONS:\n\n"
         + "\n\n".join(transcript_blocks)
     )
-    return complete_text(
+    # The report benefits from cross-turn reasoning, so this is the one agent
+    # that gets a deep thinking level. It runs once, so nothing chains off it.
+    text, _ = stream_turn(
         system,
-        [{"role": "user", "content": user}],
-        max_tokens=3000,
+        user,
+        max_tokens=TOKENS_REPORT,
+        thinking=THINKING_DEEP,
         on_text=on_text,
-        use_thinking=True,  # the report benefits from cross-turn reasoning
     )
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +195,16 @@ class SimulatedCandidate:
             background=profile.background or "(none provided)",
             persona=persona,
         )
-        self.messages: list[dict] = []
+        self.previous_id: Optional[str] = None
 
     def answer(self, interviewer_utterance: str) -> str:
-        self.messages.append({"role": "user", "content": interviewer_utterance})
-        reply = complete_text(self.system, self.messages, max_tokens=500)
-        self.messages.append({"role": "assistant", "content": reply})
-        return reply
+        text, interaction_id = stream_turn(
+            self.system,
+            interviewer_utterance,
+            max_tokens=TOKENS_CONVERSATION,
+            thinking=THINKING_FAST,
+            previous_id=self.previous_id,
+        )
+        if interaction_id:
+            self.previous_id = interaction_id
+        return text

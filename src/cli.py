@@ -28,7 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--role", help="Target role, e.g. 'Product Manager'")
     p.add_argument("--focus", choices=FOCUS_CHOICES, help="Session focus area")
     p.add_argument("--background", default=None, help="2-3 line background / resume snippet")
-    p.add_argument("--turns", type=int, default=MAX_TURNS, help="Max question turns (5-7)")
+    p.add_argument("--turns", type=int, default=MAX_TURNS,
+                   help="Max question turns (clamped to 5-7)")
     p.add_argument(
         "--simulate",
         choices=["strong", "weak", "edge"],

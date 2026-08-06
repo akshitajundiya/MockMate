@@ -1,99 +1,189 @@
-"""Thin wrapper around the Anthropic SDK.
+"""Thin wrapper around the Google Gen AI SDK (Gemini Interactions API).
 
 Two call shapes cover every agent in the system:
-  - complete_text:       streamed free-text generation (Interviewer, Coach, Simulator)
-  - complete_structured: schema-validated JSON via structured outputs (Planner, Evaluator)
+  - stream_turn:         streamed generation; returns (text, interaction_id) so
+                         multi-turn agents chain via previous_interaction_id
+  - complete_structured: schema-validated JSON via response_format (Planner, Evaluator)
+
+Three Gemini-specific details drive the shape of this module:
+
+1. `max_output_tokens` is a *combined* budget for thinking tokens plus visible
+   output on Gemini 3 models, and `thinking_level` defaults to "high". Budgets
+   here are therefore generous, and agents that don't need deliberation ask for
+   "low" explicitly.
+2. Conversation state lives server-side: `previous_interaction_id` chains turns
+   instead of us replaying the history. The id arrives on the terminal
+   `interaction.completed` stream event.
+3. The stream carries several delta kinds (`text`, `thought_summary`, tool calls…);
+   only `text` deltas are the candidate-visible answer.
 """
 
 from typing import Callable, Optional, Type, TypeVar
 
-import anthropic
-from pydantic import BaseModel
+from google import genai
+from google.genai import errors as genai_errors
+from pydantic import BaseModel, ValidationError
 
 from .config import MODEL
 
 T = TypeVar("T", bound=BaseModel)
 
-_client: Optional[anthropic.Anthropic] = None
-
-
-def client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        import os
-
-        if not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")):
-            raise MissingAPIKeyError
-        _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
-    return _client
+_client: Optional[genai.Client] = None
 
 
 class MissingAPIKeyError(RuntimeError):
     pass
 
 
-def complete_text(
+def client() -> genai.Client:
+    global _client
+    if _client is None:
+        try:
+            _client = genai.Client()  # reads GEMINI_API_KEY from the environment
+        except Exception as exc:
+            raise MissingAPIKeyError from exc
+    return _client
+
+
+def _generation_config(max_tokens: int, thinking: str) -> dict:
+    return {"max_output_tokens": max_tokens, "thinking_level": thinking}
+
+
+def stream_turn(
     system: str,
-    messages: list[dict],
-    max_tokens: int = 1024,
+    user_content: str,
+    max_tokens: int,
+    thinking: str = "low",
+    previous_id: Optional[str] = None,
     on_text: Optional[Callable[[str], None]] = None,
-    use_thinking: bool = False,
-) -> str:
-    """Stream a text completion. Calls on_text with each chunk if provided."""
-    kwargs: dict = {}
-    if use_thinking:
-        kwargs["thinking"] = {"type": "adaptive"}
-    with client().messages.stream(
+) -> tuple[str, Optional[str]]:
+    """Stream one turn. Returns (text, interaction_id).
+
+    Pass the returned id back as `previous_id` next turn to keep the history.
+    `on_text` receives each chunk as it arrives.
+    """
+    kwargs = {}
+    if previous_id:
+        kwargs["previous_interaction_id"] = previous_id
+
+    stream = client().interactions.create(
         model=MODEL,
-        max_tokens=max_tokens,
-        # cache_control on the system block: the per-agent system prompt is
-        # byte-stable across turns, so multi-turn agents (Interviewer) reuse it.
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=messages,
+        system_instruction=system,
+        input=user_content,
+        generation_config=_generation_config(max_tokens, thinking),
+        stream=True,
         **kwargs,
-    ) as stream:
-        for chunk in stream.text_stream:
-            if on_text:
-                on_text(chunk)
-        final = stream.get_final_message()
-    return "".join(block.text for block in final.content if block.type == "text")
+    )
+
+    pieces: list[str] = []
+    interaction_id: Optional[str] = None
+
+    for event in stream:
+        event_type = getattr(event, "event_type", None)
+
+        if event_type == "interaction.completed":
+            interaction = getattr(event, "interaction", None)
+            interaction_id = getattr(interaction, "id", None)
+            continue
+
+        if event_type != "step.delta":
+            continue
+
+        delta = getattr(event, "delta", None)
+        # Skip thought summaries and tool-call deltas — only visible text counts.
+        if delta is None or getattr(delta, "type", None) != "text":
+            continue
+
+        piece = getattr(delta, "text", "") or ""
+        if not piece:
+            continue
+        pieces.append(piece)
+        if on_text:
+            on_text(piece)
+
+    return "".join(pieces).strip(), interaction_id
 
 
 def complete_structured(
     system: str,
     user_content: str,
     output_model: Type[T],
-    max_tokens: int = 2048,
+    max_tokens: int = 4096,
+    thinking: str = "low",
 ) -> T:
     """Single-shot call that returns a validated instance of output_model."""
-    response = client().messages.parse(
+    interaction = client().interactions.create(
         model=MODEL,
-        max_tokens=max_tokens,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_content}],
-        output_format=output_model,
+        system_instruction=system,
+        input=user_content,
+        response_format={
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": _inline_refs(output_model.model_json_schema()),
+        },
+        generation_config=_generation_config(max_tokens, thinking),
     )
-    if response.parsed_output is None:
+    raw = (interaction.output_text or "").strip()
+    if not raw:
         raise RuntimeError(
-            f"Model returned no parseable {output_model.__name__} "
-            f"(stop_reason={response.stop_reason})"
+            f"Model returned an empty response instead of {output_model.__name__}. "
+            "This usually means the token budget was exhausted by thinking — retry, "
+            "or raise the budget in src/config.py."
         )
-    return response.parsed_output
+    try:
+        return output_model.model_validate_json(raw)
+    except ValidationError as exc:
+        raise RuntimeError(
+            f"Model returned JSON that does not match {output_model.__name__}: {exc}"
+        ) from exc
+
+
+def _inline_refs(schema: dict) -> dict:
+    """Resolve $ref/$defs into one self-contained schema.
+
+    Pydantic emits nested models ($defs + $ref); inlining them keeps the schema
+    portable across providers that don't dereference. Assumes no recursive
+    models — none of ours are.
+    """
+    defs = dict(schema.pop("$defs", {}))
+
+    def resolve(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                target = defs[ref.rsplit("/", 1)[-1]]
+                overrides = {k: v for k, v in node.items() if k != "$ref"}
+                return resolve({**target, **overrides})
+            return {k: resolve(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [resolve(v) for v in node]
+        return node
+
+    return resolve(schema)
 
 
 def friendly_api_error(exc: Exception) -> str:
     """Map SDK exceptions to actionable messages for the CLI."""
     if isinstance(exc, MissingAPIKeyError):
         return (
-            "No API key found. Set ANTHROPIC_API_KEY in your shell or in a .env file "
+            "No API key found. Set GEMINI_API_KEY in your shell or in a .env file "
             "(see .env.example), then re-run."
         )
-    if isinstance(exc, anthropic.AuthenticationError):
-        return "Authentication failed. Set ANTHROPIC_API_KEY (see README → Setup)."
-    if isinstance(exc, anthropic.RateLimitError):
-        return "Rate limited by the API. Wait a minute and try again."
-    if isinstance(exc, anthropic.APIConnectionError):
-        return "Could not reach the Anthropic API. Check your internet connection."
-    if isinstance(exc, anthropic.APIStatusError):
-        return f"API error {exc.status_code}: {exc.message}"
+    if isinstance(exc, genai_errors.APIError):
+        code = getattr(exc, "code", None)
+        message = getattr(exc, "message", str(exc))
+        if code in (401, 403):
+            return "Authentication failed. Check GEMINI_API_KEY (see README → Setup)."
+        if code == 429:
+            return "Rate limited or out of quota. Wait a minute and try again."
+        if code == 404:
+            return (
+                f"Model '{MODEL}' was not found for this key. Set GEMINI_MODEL in .env "
+                "to a model your account can access."
+            )
+        if code == 400:
+            return f"Bad request: {message}"
+        if isinstance(code, int) and code >= 500:
+            return f"Gemini service error ({code}). Wait a moment and try again."
+        return f"API error {code}: {message}"
     return f"Unexpected error: {exc}"

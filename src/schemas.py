@@ -39,7 +39,7 @@ class InterviewPlan(BaseModel):
         description="How the candidate's background should calibrate difficulty and tone"
     )
     starting_difficulty: int = Field(description="Starting difficulty 1-5")
-    competencies: list[str] = Field(description="4-6 competencies this interview should cover")
+    competencies: list[str] = Field(description="5-6 competencies this interview should cover")
     arcs: list[QuestionArc] = Field(description="Planned question arcs, one per competency")
 
 
