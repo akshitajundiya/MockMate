@@ -47,8 +47,8 @@ def run(argv: list[str] | None = None) -> int:
         Panel(
             f"[bold]Role:[/bold] {profile.role}   [bold]Focus:[/bold] {profile.focus}   "
             f"[bold]Model:[/bold] {MODEL}\n"
-            "Answer in your own words. Type [bold]quit[/bold] at any time to end early — "
-            "you'll still get coaching on what you answered.",
+            "Answer in your own words. Type [bold]quit[/bold] on a line by itself to end "
+            "early — you'll still get coaching on what you answered.",
             title="AI Mock Interview Coach",
             border_style="cyan",
         )
@@ -73,7 +73,15 @@ def run(argv: list[str] | None = None) -> int:
         return 1
 
     console.print("\n")
-    console.print(Panel(Markdown(session.report), title="Coaching Report", border_style="green"))
+    if session.report.strip():
+        console.print(
+            Panel(Markdown(session.report), title="Coaching Report", border_style="green")
+        )
+    else:
+        console.print(
+            "[red]The coaching report came back empty — the transcript below was still "
+            "saved. Re-run to try again.[/red]"
+        )
 
     path = _save_transcript(session)
     console.print(f"[dim]Transcript saved to {path}[/dim]")
@@ -113,7 +121,16 @@ def _make_candidate(args, profile: CandidateProfile):
 
     def human(question: str) -> str:
         console.print("\n")
-        return Prompt.ask("[green]Your answer[/green]")
+        while True:
+            answer = Prompt.ask("[green]Your answer[/green]").strip()
+            if answer:
+                return answer
+            # An empty line used to be scored as a real (terrible) answer and burn
+            # a turn — re-ask instead.
+            console.print(
+                "[yellow]That came through blank. Type your answer, or [bold]quit[/bold] "
+                "on a line by itself to end the interview.[/yellow]"
+            )
 
     return human
 
@@ -136,6 +153,9 @@ def _save_transcript(session: InterviewSession) -> str:
         f"_Generated {datetime.now():%Y-%m-%d %H:%M} · model {MODEL}_",
         "",
         f"**Background:** {p.background or '(none)'}",
+        "",
+        f"**Session:** {len(session.state.turns)} answered turn(s)"
+        f"{' — ended early by the candidate' if session.state.ended_early else ''}",
         "",
         "## Transcript",
         "",

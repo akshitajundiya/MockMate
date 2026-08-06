@@ -88,19 +88,29 @@ class Interviewer:
         )
 
     def _turn(self, user_content: str, on_text) -> str:
-        text, interaction_id = stream_turn(
-            self.system,
-            user_content,
-            max_tokens=TOKENS_CONVERSATION,
-            thinking=THINKING_FAST,
-            previous_id=self.previous_id,
-            on_text=on_text,
+        # A stream can occasionally yield no text deltas at all, which used to
+        # surface as a silent blank question. Retry once from the same point in
+        # the conversation before giving up.
+        for _ in range(2):
+            text, interaction_id = stream_turn(
+                self.system,
+                user_content,
+                max_tokens=TOKENS_CONVERSATION,
+                thinking=THINKING_FAST,
+                previous_id=self.previous_id,
+                on_text=on_text,
+            )
+            if text:
+                # Only advance the conversation on a turn that actually spoke;
+                # chaining to an empty interaction would poison the history.
+                if interaction_id:
+                    self.previous_id = interaction_id
+                return text
+
+        raise RuntimeError(
+            "The interviewer returned an empty turn twice in a row. This is usually "
+            "a transient API issue — re-run the session."
         )
-        # Keep the last good id if the stream ended without a completion event,
-        # rather than silently resetting the conversation to turn one.
-        if interaction_id:
-            self.previous_id = interaction_id
-        return text
 
 
 # ---------------------------------------------------------------------------

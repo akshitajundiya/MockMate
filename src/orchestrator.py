@@ -32,7 +32,17 @@ from .schemas import (
 # The CLI passes human input; --simulate passes a SimulatedCandidate.
 CandidateFn = Callable[[str], str]
 
-END_SENTINELS = {"quit", "exit", "/quit", "/exit"}
+END_SENTINELS = {"quit", "exit", "/quit", "/exit", "stop"}
+
+
+def _is_end_sentinel(answer: str) -> bool:
+    """True only when the whole line is a quit word.
+
+    Tolerates case and trailing punctuation ("Quit.") but deliberately does not
+    match a sentinel buried in a real answer — "...into production.quit" is far
+    more likely to be a typing slip than an intent to end mid-sentence.
+    """
+    return answer.strip().lower().strip(".!?,;: ") in END_SENTINELS
 
 
 @dataclass
@@ -74,7 +84,7 @@ class InterviewSession:
 
         while True:
             answer = candidate(question)
-            if answer.strip().lower() in END_SENTINELS:
+            if _is_end_sentinel(answer):
                 self.state.ended_early = True
                 break
 
