@@ -208,13 +208,24 @@ class SimulatedCandidate:
         self.previous_id: Optional[str] = None
 
     def answer(self, interviewer_utterance: str) -> str:
-        text, interaction_id = stream_turn(
-            self.system,
-            interviewer_utterance,
-            max_tokens=TOKENS_CONVERSATION,
-            thinking=THINKING_FAST,
-            previous_id=self.previous_id,
+        # Same empty-stream guard as the Interviewer: an empty answer here would
+        # be scored as a real (terrible) one and waste a turn.
+        for _ in range(2):
+            text, interaction_id = stream_turn(
+                self.system,
+                interviewer_utterance,
+                max_tokens=TOKENS_CONVERSATION,
+                thinking=THINKING_FAST,
+                previous_id=self.previous_id,
+            )
+            if text:
+                if interaction_id:
+                    self.previous_id = interaction_id
+                return text
+
+        raise RuntimeError(
+            "The simulated candidate returned an empty answer twice in a row. "
+            "Usually transient; if it repeats, raise TOKENS_CONVERSATION in "
+            "src/config.py — thinking and output share one budget, so a hard "
+            "question can exhaust it before any visible text is produced."
         )
-        if interaction_id:
-            self.previous_id = interaction_id
-        return text

@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from .config import MAX_TURNS, MODEL, TRANSCRIPTS_DIR
-from .llm import friendly_api_error
+from .llm import friendly_api_error, set_retry_notifier
 from .orchestrator import InterviewSession, SessionCallbacks
 from .schemas import CandidateProfile, TurnRecord
 
@@ -58,6 +58,19 @@ def run(argv: list[str] | None = None) -> int:
         on_interviewer_text=lambda chunk: console.print(chunk, end="", style="bold white"),
         on_phase=lambda msg: console.print(f"\n[dim]{msg}[/dim]"),
         on_turn_evaluated=(_debug_eval if args.debug else None),
+    )
+
+    def _describe_retry(code) -> str:
+        if code == 429:
+            return "Rate limited"
+        if code is None:
+            return "Connection dropped"
+        return f"API error {code}"
+
+    set_retry_notifier(
+        lambda delay, code: console.print(
+            f"[dim]{_describe_retry(code)} — waiting {delay:.0f}s, then continuing…[/dim]"
+        )
     )
 
     session = InterviewSession(profile, callbacks, max_turns=args.turns)

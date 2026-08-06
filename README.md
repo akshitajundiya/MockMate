@@ -32,6 +32,17 @@ export GEMINI_API_KEY="your-key-here"
 
 Defaults to `gemini-3.6-flash`; override with `GEMINI_MODEL` in `.env`.
 
+**Model choice matters.** The Planner and Evaluator depend on structured outputs, and
+the Gemini 2.5 family ignores the JSON schema and answers in prose — so use a 3.x model.
+Verified working: `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`,
+`gemini-3.1-flash-lite`.
+
+**On the free tier**, quota is per model per day and a simulated 5-turn session costs
+about 17 requests (1 plan + 3 per turn + 1 report), so you get roughly one demo run per
+model per day. A human session is cheaper — about 12 — because there's no simulated
+candidate. Rate limits and dropped connections are retried automatically with backoff;
+switching `GEMINI_MODEL` gets you a fresh quota bucket.
+
 ## Run
 
 ```bash
