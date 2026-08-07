@@ -59,8 +59,21 @@ python main.py --role "Data Analyst" --focus technical --simulate weak
 python main.py --role "Frontend Engineer intern" --focus mixed --simulate edge --debug
 ```
 
-Type `quit` mid-interview to end early — you still get coaching on what you answered.
-Every session is saved to `transcripts/session_<timestamp>.md`.
+Type `quit` on a line by itself to end early — you still get coaching on what you
+answered. A blank line is re-prompted rather than scored. Every session is saved to
+`transcripts/session_<timestamp>.md`.
+
+### Verify it works without an API key
+
+```bash
+python smoke_test.py
+```
+
+Runs the real Planner, Interviewer, Evaluator, Coach, orchestration policy and
+transcript writer against a fake model — no key, no network, no quota. It asserts on
+behaviour rather than just imports: that a weak answer triggers a probe, that difficulty
+adapts, that no topic repeats outside probes, and that the report contains all five
+sections. Useful as a first check, and as a regression test after changing a prompt.
 
 ---
 
@@ -174,12 +187,15 @@ All prompts live in [`prompts/`](prompts/) — one file per agent.
 
 ## Example transcripts
 
-Three sessions in [`examples/`](examples/) — condensed, with the evaluator's live
-verdicts shown (`--debug` view) so the adaptive behaviour is visible:
+Three sessions in [`examples/`](examples/), shown in `--debug` view so the evaluator's
+normally-hidden verdicts are visible.
 
 - [`transcript_strong_candidate.md`](examples/transcript_strong_candidate.md) —
-  Product Manager, behavioral. Difficulty ratchets 3→4→5; strong answers get
-  `move_on`, one gets a `follow_up` thread pulled.
+  **A real, unedited run.** Data Analyst, technical, on `gemini-3-flash-preview`.
+  Difficulty climbs 2→3→4→5; a `follow_up` at turn 3 turns turn 4 into a probe on the
+  same competency; a competency the session never reached is scored `N/A` in the report
+  rather than guessed at. System output is reproduced verbatim from the saved
+  transcript, with clearly-labelled annotations added for the reader.
 - [`transcript_weak_candidate.md`](examples/transcript_weak_candidate.md) —
   Data Analyst, technical. Vague answers trigger probes; probe budget stops the
   spiral; difficulty steps down; coach report focuses on specificity.
@@ -188,14 +204,16 @@ verdicts shown (`--debug` view) so the adaptive behaviour is visible:
   "I don't know" (handled gracefully), a clarification request, and an attempt to
   game the scoring (red-flagged and addressed in the report).
 
-> These are representative sample sessions written to document expected behaviour.
-> Regenerate live ones with your own API key:
+> The strong-candidate transcript is a real generated session. **The weak and edge-case
+> transcripts are hand-written** to document expected behaviour — they are specifications,
+> not captured output. Generate live equivalents with your own API key:
 > `python main.py --role "..." --focus ... --simulate strong|weak|edge --debug`
 
 ## Project layout
 
 ```
 main.py                  entry point
+smoke_test.py            offline end-to-end test (fake model, no API key needed)
 src/
   cli.py                 terminal UI (rich), transcript writer
   orchestrator.py        session loop + adaptation policy (deterministic)
@@ -205,14 +223,16 @@ src/
   prompts.py             prompt loader ($var templating)
   config.py              env-driven configuration
 prompts/                 one system prompt per agent
-examples/                three annotated sample transcripts
+examples/                one real transcript + two written specifications
 transcripts/             saved sessions (gitignored)
 ```
 
 ## What I'd build next
 
-- A small eval harness: run all three simulator personas nightly and assert on the
-  orchestrator's decisions (probe counts, difficulty path, red-flag detection).
+- Extend `smoke_test.py` into a full eval harness: it already asserts on the
+  orchestrator's decisions against a fake model, but the prompts themselves are
+  untested. The next step is running all three simulator personas against the real
+  model on a schedule and asserting on red-flag detection and score calibration.
 - Question-bank grounding in the Planner (RAG over role-specific banks) once real
   usage shows model-generated questions repeating.
 - Voice in/out — the agent boundaries already support it since the Interviewer is
