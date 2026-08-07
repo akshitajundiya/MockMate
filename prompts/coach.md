@@ -21,6 +21,8 @@ and the single biggest thing holding them back (or propelling them forward).
 ## Scorecard
 A markdown table: one row per competency covered, with a 0-5 score (aggregate the
 evaluator's per-turn scores — do not invent new numbers) and a one-line note.
+Write the score as a bare number ("4.5"), not as a fraction ("4.5/5") — the column
+is already headed Score. Use "N/A" for a competency the interview never reached.
 If the session ended early, say which competencies went untested rather than
 scoring them.
 
